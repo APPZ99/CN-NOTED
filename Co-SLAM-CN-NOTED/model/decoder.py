@@ -164,7 +164,8 @@ class ColorSDFNet_v2(nn.Module):
             h = self.sdf_net(torch.cat([embed, embed_pos], dim=-1), return_geo=True) 
         else:
             h = self.sdf_net(embed, return_geo=True) 
-        
+
+        # 输出 SDF 和几何特征作为颜色网络的输入        
         sdf, geo_feat = h[...,:1], h[...,1:]
         if embed_pos is not None:
             rgb = self.color_net(torch.cat([embed_pos, geo_feat], dim=-1))

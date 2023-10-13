@@ -22,17 +22,22 @@ from utils.config import SHINEConfig
 # setup this run
 def setup_experiment(config: SHINEConfig): 
 
+    # 设定线程数
     os.environ["NUMEXPR_MAX_THREADS"] = str(multiprocessing.cpu_count())
     os.environ["CUDA_VISIBLE_DEVICES"] = str(config.gpu_id)
+    # 设定程序名称
     ts = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")  # begining timestamp
     run_name = config.name + "_" + ts  # modified to a name that is easier to index
-        
+    
     run_path = os.path.join(config.output_root, run_name)
+    # 创建的目录的访问权限
     access = 0o755
     os.makedirs(run_path, access, exist_ok=True)
+    # 检测是否具有写权限
     assert os.access(run_path, os.W_OK)
     print(f"Start {run_path}")
 
+    # 创建各个模块的文件目录
     mesh_path = os.path.join(run_path, "mesh")
     map_path = os.path.join(run_path, "map")
     model_path = os.path.join(run_path, "model")
@@ -40,6 +45,7 @@ def setup_experiment(config: SHINEConfig):
     os.makedirs(map_path, access, exist_ok=True)
     os.makedirs(model_path, access, exist_ok=True)
     
+    # 设置模型权重和偏差
     if config.wandb_vis_on:
         # set up wandb
         setup_wandb()
@@ -47,6 +53,7 @@ def setup_experiment(config: SHINEConfig):
         wandb.run.name = run_name         
     
     # set the random seed (for deterministic experiment results)
+    # 使用相同随机种子确保实验可重复性和实验结果一致性
     o3d.utility.random.seed(config.seed)
     torch.manual_seed(config.seed)
     np.random.seed(config.seed) 

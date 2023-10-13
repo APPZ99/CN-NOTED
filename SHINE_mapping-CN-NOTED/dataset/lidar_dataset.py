@@ -20,8 +20,8 @@ from model.feature_octree import FeatureOctree
 # better to write a new dataloader for RGB-D inputs, not always converting them to KITTI Lidar format
 
 class LiDARDataset(Dataset):
+    # 返回值为 None， : 表示参数类型
     def __init__(self, config: SHINEConfig, octree: FeatureOctree = None) -> None:
-
         super().__init__()
 
         self.config = config

@@ -11,9 +11,13 @@ class JointEncoding(nn.Module):
     def __init__(self, config, bound_box):
         super(JointEncoding, self).__init__()
         self.config = config
+        # 边界框大小
         self.bounding_box = bound_box
+        # 得到网格分辨率
         self.get_resolution()
+        # 获取编码器
         self.get_encoding(config)
+        # 获取解码器
         self.get_decoder(config)
         
 
@@ -21,7 +25,9 @@ class JointEncoding(nn.Module):
         '''
         Get the resolution of the grid
         '''
+        # 计算每个轴的大小
         dim_max = (self.bounding_box[:,1] - self.bounding_box[:,0]).max()
+        # 计算分辨率
         if self.config['grid']['voxel_sdf'] > 10:
             self.resolution_sdf = self.config['grid']['voxel_sdf']
         else:
@@ -55,9 +61,10 @@ class JointEncoding(nn.Module):
         '''
         if not self.config['grid']['oneGrid']:
             self.decoder = ColorSDFNet(config, input_ch=self.input_ch, input_ch_pos=self.input_ch_pos)
+        # 采用的是 v2 版本
         else:
             self.decoder = ColorSDFNet_v2(config, input_ch=self.input_ch, input_ch_pos=self.input_ch_pos)
-        
+        # 将两个网络单独分离开
         self.color_net = batchify(self.decoder.color_net, None)
         self.sdf_net = batchify(self.decoder.sdf_net, None)
 

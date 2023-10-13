@@ -72,6 +72,7 @@ def batchify(fn, chunk=1024*64):
         """
         if chunk is None:
             return fn
+        # 是否输入方向
         def ret(inputs, inputs_dir=None):
             if inputs_dir is not None:
                 return torch.cat([fn(inputs[i:i+chunk], inputs_dir[i:i+chunk]) for i in range(0, inputs.shape[0], chunk)], 0)

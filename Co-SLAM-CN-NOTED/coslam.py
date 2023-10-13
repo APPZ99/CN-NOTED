@@ -29,12 +29,17 @@ class CoSLAM():
     def __init__(self, config):
         self.config = config
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        # 获得数据集类型
         self.dataset = get_dataset(config)
-        
+        # 设定场景边界
         self.create_bounds()
+        # 创建位姿相关的数据
         self.create_pose_data()
+        # 获取位姿的表示方法
         self.get_pose_representation()
+        # 关键帧数据集
         self.keyframeDatabase = self.create_kf_database(config)
+        # pipeline 模型
         self.model = JointEncoding(config, self.bounding_box).to(self.device)
     
     def seed_everything(self, seed):
@@ -48,11 +53,12 @@ class CoSLAM():
         '''
         Get the pose representation axis-angle or quaternion
         '''
+        # 旋转轴表示
         if self.config['training']['rot_rep'] == 'axis_angle':
             self.matrix_to_tensor = matrix_to_axis_angle
             self.matrix_from_tensor = at_to_transform_matrix
             print('Using axis-angle as rotation representation, identity init would cause inf')
-        
+        # 四元数表示
         elif self.config['training']['rot_rep'] == "quat":
             print("Using quaternion as rotation representation")
             self.matrix_to_tensor = matrix_to_quaternion
@@ -64,6 +70,7 @@ class CoSLAM():
         '''
         Create the pose data
         '''
+        # 相机到世界坐标系的位姿数据和相对位姿数据
         self.est_c2w_data = {}
         self.est_c2w_data_rel = {}
         self.load_gt_pose() 
@@ -79,6 +86,7 @@ class CoSLAM():
         '''
         Create the keyframe database
         '''
+        # 每五帧创建一个关键帧
         num_kf = int(self.dataset.num_frames // self.config['mapping']['keyframe_every'] + 1)  
         print('#kf:', num_kf)
         print('#Pixels to save:', self.dataset.num_rays_to_save)
@@ -166,6 +174,7 @@ class CoSLAM():
         
         '''
         print('First frame mapping...')
+        # 第一帧固定其坐标系，让后续坐标对齐
         c2w = batch['c2w'][0].to(self.device)
         self.est_c2w_data[0] = c2w
         self.est_c2w_data_rel[0] = c2w
@@ -175,25 +184,33 @@ class CoSLAM():
         # Training
         for i in range(n_iters):
             self.map_optimizer.zero_grad()
+            # 随机采样
             indice = self.select_samples(self.dataset.H, self.dataset.W, self.config['mapping']['sample'])
-            
+            # 一维索引转二维索引
             indice_h, indice_w = indice % (self.dataset.H), indice // (self.dataset.H)
+            # 读取数据
             rays_d_cam = batch['direction'].squeeze(0)[indice_h, indice_w, :].to(self.device)
             target_s = batch['rgb'].squeeze(0)[indice_h, indice_w, :].to(self.device)
             target_d = batch['depth'].squeeze(0)[indice_h, indice_w].to(self.device).unsqueeze(-1)
 
+            # 获得相机射线
             rays_o = c2w[None, :3, -1].repeat(self.config['mapping']['sample'], 1)
             rays_d = torch.sum(rays_d_cam[..., None, :] * c2w[:3, :3], -1)
 
             # Forward
             ret = self.model.forward(rays_o, rays_d, target_s, target_d)
+            # 获得损失
             loss = self.get_loss_from_ret(ret)
+            # 反向传播
             loss.backward()
+            # 优化
             self.map_optimizer.step()
         
         # First frame will always be a keyframe
+        # 保存第一帧为关键帧
         self.keyframeDatabase.add_keyframe(batch, filter_depth=self.config['mapping']['filter_depth'])
         if self.config['mapping']['first_mesh']:
+            # 渲染 mesh
             self.save_mesh(0)
         
         print('First frame mapping done')
@@ -394,10 +411,11 @@ class CoSLAM():
         '''
         Predict current pose from previous pose using camera motion model
         '''
+        # 第一帧还有非匀速模型情况下，位姿采用上一帧的位姿
         if frame_id == 1 or (not constant_speed):
             c2w_est_prev = self.est_c2w_data[frame_id-1].to(self.device)
             self.est_c2w_data[frame_id] = c2w_est_prev
-            
+        # 匀速运动模型初始化这一帧的位姿
         else:
             c2w_est_prev_prev = self.est_c2w_data[frame_id-2].to(self.device)
             c2w_est_prev = self.est_c2w_data[frame_id-1].to(self.device)
@@ -411,55 +429,61 @@ class CoSLAM():
         Tracking camera pose of current frame using point cloud loss
         (Not used in the paper, but might be useful for some cases)
         '''
-
+        # 第一帧位姿
         c2w_gt = batch['c2w'][0].to(self.device)
-
+        # 当前位姿
         cur_c2w = self.predict_current_pose(frame_id, self.config['tracking']['const_speed'])
-
+        # 当前位姿的平移和旋转
         cur_trans = torch.nn.parameter.Parameter(cur_c2w[..., :3, 3].unsqueeze(0))
         cur_rot = torch.nn.parameter.Parameter(self.matrix_to_tensor(cur_c2w[..., :3, :3]).unsqueeze(0))
         pose_optimizer = torch.optim.Adam([{"params": cur_rot, "lr": self.config['tracking']['lr_rot']},
                                                {"params": cur_trans, "lr": self.config['tracking']['lr_trans']}])
+        # 最优的损失
         best_sdf_loss = None
-
+        # 采样时，忽略图像边缘部分
         iW = self.config['tracking']['ignore_edge_W']
         iH = self.config['tracking']['ignore_edge_H']
-
+        # 迭代次数，若超过该次数仍未有最佳位姿，则退出循环
         thresh=0
 
         if self.config['tracking']['iter_point'] > 0:
+
             indice_pc = self.select_samples(self.dataset.H-iH*2, self.dataset.W-iW*2, self.config['tracking']['pc_samples'])
             rays_d_cam = batch['direction'][:, iH:-iH, iW:-iW].reshape(-1, 3)[indice_pc].to(self.device)
             target_s = batch['rgb'][:, iH:-iH, iW:-iW].reshape(-1, 3)[indice_pc].to(self.device)
             target_d = batch['depth'][:, iH:-iH, iW:-iW].reshape(-1, 1)[indice_pc].to(self.device)
-
+            # 有效深度的掩码
             valid_depth_mask = ((target_d > 0.) * (target_d < 5.))[:,0]
-
+            # 获取有效深度内的数据
             rays_d_cam = rays_d_cam[valid_depth_mask]
             target_s = target_s[valid_depth_mask]
             target_d = target_d[valid_depth_mask]
 
             for i in range(self.config['tracking']['iter_point']):
                 pose_optimizer.zero_grad()
+                # 估计的位姿
                 c2w_est = self.matrix_from_tensor(cur_rot, cur_trans)
-
-
+                # 构建射线
                 rays_o = c2w_est[...,:3, -1].repeat(len(rays_d_cam), 1)
                 rays_d = torch.sum(rays_d_cam[..., None, :] * c2w_est[:, :3, :3], -1)
+                # 采样点
                 pts = rays_o + target_d * rays_d
-
+                # 归一化采样点[0,1]
                 pts_flat = (pts - self.bounding_box[:, 0]) / (self.bounding_box[:, 1] - self.bounding_box[:, 0])
-
+                # 模型输出
                 out = self.model.query_color_sdf(pts_flat)
-
+                # 获得 sdf 和颜色
                 sdf = out[:, -1]
                 rgb = torch.sigmoid(out[:,:3])
 
                 # TODO: Change this
+                # 计算损失
                 loss = 5 * torch.mean(torch.square(rgb-target_s)) + 1000 * torch.mean(torch.square(sdf))
 
                 if best_sdf_loss is None:
+                    # 用 cpu 计算损失，返回损失标量
                     best_sdf_loss = loss.cpu().item()
+                    # 备份当前位姿为最佳位姿，不参与后续跟踪梯度
                     best_c2w_est = c2w_est.detach()
 
                 with torch.no_grad():
@@ -473,19 +497,20 @@ class CoSLAM():
                         thresh +=1
                 if thresh >self.config['tracking']['wait_iters']:
                     break
-
+                # 优化
                 loss.backward()
                 pose_optimizer.step()
         
-
+        # 是否使用最佳位姿
         if self.config['tracking']['best']:
             self.est_c2w_data[frame_id] = best_c2w_est.detach().clone()[0]
         else:
             self.est_c2w_data[frame_id] = c2w_est.detach().clone()[0]
 
-
+        # 非关键帧要进行如下操作
         if frame_id % self.config['mapping']['keyframe_every'] != 0:
             # Not a keyframe, need relative pose
+            # 获得当前帧与上一帧关键帧的相对位姿
             kf_id = frame_id // self.config['mapping']['keyframe_every']
             kf_frame_id = kf_id * self.config['mapping']['keyframe_every']
             c2w_key = self.est_c2w_data[kf_frame_id]
@@ -598,12 +623,15 @@ class CoSLAM():
         Create optimizer for mapping
         '''
         # Optimizer for BA
+        # 训练的参数
+        # TODO: eps 作用
         trainable_parameters = [{'params': self.model.decoder.parameters(), 'weight_decay': 1e-6, 'lr': self.config['mapping']['lr_decoder']},
                                 {'params': self.model.embed_fn.parameters(), 'eps': 1e-15, 'lr': self.config['mapping']['lr_embed']}]
     
         if not self.config['grid']['oneGrid']:
             trainable_parameters.append({'params': self.model.embed_fn_color.parameters(), 'eps': 1e-15, 'lr': self.config['mapping']['lr_embed_color']})
         
+        # Adam 优化器
         self.map_optimizer = optim.Adam(trainable_parameters, betas=(0.9, 0.99))
         
         # Optimizer for current frame mapping
@@ -630,7 +658,9 @@ class CoSLAM():
                         mesh_savepath=mesh_savepath)      
         
     def run(self):
+        # 创建优化器
         self.create_optimizer()
+        # 加载数据
         data_loader = DataLoader(self.dataset, num_workers=self.config['data']['num_workers'])
 
         # Start Co-SLAM!
@@ -649,13 +679,16 @@ class CoSLAM():
                 key = cv2.waitKey(1)
 
             # First frame mapping
+            # 渲染第一帧
             if i == 0:
                 self.first_frame_mapping(batch, self.config['mapping']['first_iters'])
             
             # Tracking + Mapping
             else:
                 if self.config['tracking']['iter_point'] > 0:
+                    # 跟踪线程
                     self.tracking_pc(batch, i)
+                    
                 self.tracking_render(batch, i)
     
                 if i%self.config['mapping']['map_every']==0:
@@ -699,6 +732,7 @@ class CoSLAM():
 if __name__ == '__main__':
             
     print('Start running...')
+    # 添加命令行参数
     parser = argparse.ArgumentParser(
         description='Arguments for running the NICE-SLAM/iMAP*.'
     )
@@ -707,13 +741,14 @@ if __name__ == '__main__':
                         help='input folder, this have higher priority, can overwrite the one in config file')
     parser.add_argument('--output', type=str,
                         help='output folder, this have higher priority, can overwrite the one in config file')
-    
+    # 解析命令行参数
     args = parser.parse_args()
-
+    # 配置文件
     cfg = config.load_config(args.config)
     if args.output is not None:
         cfg['data']['output'] = args.output
 
+    # 创建保存目录
     print("Saving config and script...")
     save_path = os.path.join(cfg["data"]["output"], cfg['data']['exp_name'])
     if not os.path.exists(save_path):
@@ -721,6 +756,7 @@ if __name__ == '__main__':
     shutil.copy("coslam.py", os.path.join(save_path, 'coslam.py'))
 
     with open(os.path.join(save_path, 'config.json'),"w", encoding='utf-8') as f:
+        # 将 cfg 转为 json 格式写入，indent 为缩进空格数
         f.write(json.dumps(cfg, indent=4))
 
     slam = CoSLAM(cfg)
