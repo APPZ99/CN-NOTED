@@ -72,8 +72,9 @@ class KeyFrameDatabase(object):
         '''
         num_kf = self.__len__()
         idxs = torch.tensor(random.sample(range(num_kf * self.num_rays_to_save), bs))
+        # 关键帧中的射线
         sample_rays = self.rays[:num_kf].reshape(-1, 7)[idxs]
-
+        # 获取采样帧的索引
         frame_ids = self.frame_ids[idxs//self.num_rays_to_save]
 
         return sample_rays, frame_ids

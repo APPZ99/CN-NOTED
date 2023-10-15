@@ -307,20 +307,25 @@ class CoSLAM():
         pose_optimizer = None
 
         # all the KF poses: 0, 5, 10, ...
+        # 获取所有关键帧
         poses = torch.stack([self.est_c2w_data[i] for i in range(0, cur_frame_id, self.config['mapping']['keyframe_every'])])
         
         # frame ids for all KFs, used for update poses after optimization
+        # 关键帧的索引
         frame_ids_all = torch.tensor(list(range(0, cur_frame_id, self.config['mapping']['keyframe_every'])))
 
+        # 关键帧数量是否小于2
         if len(self.keyframeDatabase.frame_ids) < 2:
             poses_fixed = torch.nn.parameter.Parameter(poses).to(self.device)
             current_pose = self.est_c2w_data[cur_frame_id][None,...]
             poses_all = torch.cat([poses_fixed, current_pose], dim=0)
         
         else:
+            # 只固定第一帧
             poses_fixed = torch.nn.parameter.Parameter(poses[:1]).to(self.device)
             current_pose = self.est_c2w_data[cur_frame_id][None,...]
 
+            # 是否优化当前帧
             if self.config['mapping']['optim_cur']:
                 cur_rot, cur_trans, pose_optimizer, = self.get_pose_param_optim(torch.cat([poses[1:], current_pose]))
                 pose_optim = self.matrix_from_tensor(cur_rot, cur_trans).to(self.device)
@@ -339,22 +344,21 @@ class CoSLAM():
         current_rays = torch.cat([batch['direction'], batch['rgb'], batch['depth'][..., None]], dim=-1)
         current_rays = current_rays.reshape(-1, current_rays.shape[-1])
 
-        
-
         for i in range(self.config['mapping']['iters']):
 
             # Sample rays with real frame ids
             # rays [bs, 7]
             # frame_ids [bs]
+            # 获取采样射线和其索引
             rays, ids = self.keyframeDatabase.sample_global_rays(self.config['mapping']['sample'])
 
             #TODO: Checkpoint...
+            # 对当前帧进行采样
             idx_cur = random.sample(range(0, self.dataset.H * self.dataset.W),max(self.config['mapping']['sample'] // len(self.keyframeDatabase.frame_ids), self.config['mapping']['min_pixels_cur']))
             current_rays_batch = current_rays[idx_cur, :]
-
+            # 整合所有训练数据
             rays = torch.cat([rays, current_rays_batch], dim=0) # N, 7
             ids_all = torch.cat([ids//self.config['mapping']['keyframe_every'], -torch.ones((len(idx_cur)))]).to(torch.int64)
-
 
             rays_d_cam = rays[..., :3].to(self.device)
             target_s = rays[..., 3:6].to(self.device)
@@ -372,6 +376,7 @@ class CoSLAM():
             
             loss.backward(retain_graph=True)
             
+            # 固定帧数进行建图和优化
             if (i + 1) % cfg["mapping"]["map_accum_step"] == 0:
                
                 if (i + 1) > cfg["mapping"]["map_wait_step"]:
@@ -402,7 +407,7 @@ class CoSLAM():
         if pose_optimizer is not None and len(frame_ids_all) > 1:
             for i in range(len(frame_ids_all[1:])):
                 self.est_c2w_data[int(frame_ids_all[i+1].item())] = self.matrix_from_tensor(cur_rot[i:i+1], cur_trans[i:i+1]).detach().clone()[0]
-        
+            # 是否优化当前帧
             if self.config['mapping']['optim_cur']:
                 print('Update current pose')
                 self.est_c2w_data[cur_frame_id] = self.matrix_from_tensor(cur_rot[-1:], cur_trans[-1:]).detach().clone()[0]
@@ -528,7 +533,7 @@ class CoSLAM():
             batch['direction']: Ray direction [B, H, W, 3]
             frame_id: Current frame id (int)
         '''
-
+        # 第一帧的世界坐标系
         c2w_gt = batch['c2w'][0].to(self.device)
 
         # Initialize current pose
@@ -544,6 +549,7 @@ class CoSLAM():
         iW = self.config['tracking']['ignore_edge_W']
         iH = self.config['tracking']['ignore_edge_H']
 
+        # 获取需要优化的参数
         cur_rot, cur_trans, pose_optimizer = self.get_pose_param_optim(cur_c2w[None,...], mapping=False)
 
         # Start tracking
@@ -552,12 +558,14 @@ class CoSLAM():
             c2w_est = self.matrix_from_tensor(cur_rot, cur_trans)
 
             # Note here we fix the sampled points for optimisation
+            # 固定采样点
             if indice is None:
                 indice = self.select_samples(self.dataset.H-iH*2, self.dataset.W-iW*2, self.config['tracking']['sample'])
             
                 # Slicing
                 indice_h, indice_w = indice % (self.dataset.H - iH * 2), indice // (self.dataset.H - iH * 2)
                 rays_d_cam = batch['direction'].squeeze(0)[iH:-iH, iW:-iW, :][indice_h, indice_w, :].to(self.device)
+
             target_s = batch['rgb'].squeeze(0)[iH:-iH, iW:-iW, :][indice_h, indice_w, :].to(self.device)
             target_d = batch['depth'].squeeze(0)[iH:-iH, iW:-iW][indice_h, indice_w].to(self.device).unsqueeze(-1)
 
@@ -688,20 +696,23 @@ class CoSLAM():
                 if self.config['tracking']['iter_point'] > 0:
                     # 跟踪线程
                     self.tracking_pc(batch, i)
-                    
+                # 当前帧跟踪线程
                 self.tracking_render(batch, i)
     
                 if i%self.config['mapping']['map_every']==0:
+                    # 建图
                     self.current_frame_mapping(batch, i)
+                    # 全局 BA
                     self.global_BA(batch, i)
 
                     
                 # Add keyframe
                 if i % self.config['mapping']['keyframe_every'] == 0:
+                    # 添加关键帧
                     self.keyframeDatabase.add_keyframe(batch, filter_depth=self.config['mapping']['filter_depth'])
                     print('add keyframe:',i)
             
-
+                # mesh渲染
                 if i % self.config['mesh']['vis']==0:
                     self.save_mesh(i, voxel_size=self.config['mesh']['voxel_eval'])
                     pose_relative = self.convert_relative_pose()
