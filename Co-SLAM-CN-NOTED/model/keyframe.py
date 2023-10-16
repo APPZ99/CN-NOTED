@@ -24,8 +24,10 @@ class KeyFrameDatabase(object):
         '''
         Sampling strategy for current keyframe rays
         '''
+        # 随机采样
         if option == 'random':
             idxs = random.sample(range(0, self.H*self.W), self.num_rays_to_save)
+        # 规定深度距离后随机采样
         elif option == 'filter_depth':
             valid_depth_mask = (rays[..., -1] > 0.0) & (rays[..., -1] <= self.config["cam"]["depth_trunc"])
             rays_valid = rays[valid_depth_mask, :]  # [n_valid, 7]
@@ -61,9 +63,11 @@ class KeyFrameDatabase(object):
         if not isinstance(batch['frame_id'], torch.Tensor):
             batch['frame_id'] = torch.tensor([batch['frame_id']])
 
+        # 关联索引
         self.attach_ids(batch['frame_id'])
 
         # Store the rays
+        # 保存每一个关键帧对应的采样射线
         self.rays[len(self.frame_ids)-1] = rays
     
     def sample_global_rays(self, bs):
@@ -71,10 +75,11 @@ class KeyFrameDatabase(object):
         Sample rays from self.rays as well as frame_ids
         '''
         num_kf = self.__len__()
+        # 获取全局采样的射线索引
         idxs = torch.tensor(random.sample(range(num_kf * self.num_rays_to_save), bs))
-        # 关键帧中的射线
+        # 取出对应索引的采样射线
         sample_rays = self.rays[:num_kf].reshape(-1, 7)[idxs]
-        # 获取采样帧的索引
+        # 计算从哪几个关键帧得到的采样射线
         frame_ids = self.frame_ids[idxs//self.num_rays_to_save]
 
         return sample_rays, frame_ids
@@ -85,6 +90,7 @@ class KeyFrameDatabase(object):
         Window size: limit the window size for keyframe
         n_fixed: sample the last n_fixed keyframes
         '''
+        # 如果小于 window 大小则返回当前所有关键帧数据
         if window_size >= len(self.frame_ids):
             return self.rays[:len(self.frame_ids)], self.frame_ids
         
@@ -92,9 +98,11 @@ class KeyFrameDatabase(object):
         last_frame_ids = self.frame_ids[-n_fixed:]
 
         # Random sampling
+        # 所有关键帧中随机采样 window_size 个
         idx = random.sample(range(0, len(self.frame_ids) -n_fixed), window_size)
 
         # Include last n_fixed 
+        # 最后几帧关键帧包含进来
         idx_rays = idx + list(range(current_num_kf-n_fixed, current_num_kf))
         select_rays = self.rays[idx_rays]
 
@@ -115,12 +123,14 @@ class KeyFrameDatabase(object):
         '''
         c2w_est = est_c2w_list[frame_id]       
 
+        # 采样射线
         indices = torch.randint(dataset.H* dataset.W, (n_pixel,))
         rays_d_cam = batch['direction'].reshape(-1, 3)[indices].to(self.device)
         target_d = batch['depth'].reshape(-1, 1)[indices].repeat(1, n_samples).to(self.device)
         rays_d = torch.sum(rays_d_cam[..., None, :] * c2w_est[:3, :3], -1)
         rays_o = c2w_est[None, :3, -1].repeat(rays_d.shape[0], 1).to(self.device)        
 
+        # .to(target_d) 将数据移动到 target_d 相同的设备
         t_vals = torch.linspace(0., 1., steps=n_samples).to(target_d)
         near = target_d*0.8
         far = target_d+0.5
@@ -134,40 +144,51 @@ class KeyFrameDatabase(object):
         for i, frame_id in enumerate(self.frame_ids):
             frame_id = int(frame_id.item())
             c2w = est_c2w_list[frame_id].cpu().numpy()
+            # 取逆
             w2c = np.linalg.inv(c2w)
+            # 转换为齐次坐标
             ones = np.ones_like(pts_flat[:, 0]).reshape(-1, 1)
             pts_flat_homo = np.concatenate(
                 [pts_flat, ones], axis=1).reshape(-1, 4, 1)  # (N, 4)
+            # 采样点在相机坐标系的齐次坐标
             cam_cord_homo = w2c@pts_flat_homo  # (N, 4, 1)=(4,4)*(N, 4, 1)
+            # 采样点在相机坐标系下的坐标
             cam_cord = cam_cord_homo[:, :3]  # (N, 3, 1)
             K = np.array([[self.config['cam']['fx'], .0, self.config['cam']['cx']], 
                           [.0, self.config['cam']['fy'], self.config['cam']['cy']],
                          [.0, .0, 1.0]]).reshape(3, 3)
+            # 取 X 轴反方向
             cam_cord[:, 0] *= -1
+            # 得到平面像素坐标 uv
             uv = K@cam_cord
+            # 归一化坐标
             z = uv[:, -1:]+1e-5
             uv = uv[:, :2]/z
             uv = uv.astype(np.float32)
+            # 过滤图像边缘像素
             edge = 20
             mask = (uv[:, 0] < self.config['cam']['W']-edge)*(uv[:, 0] > edge) * \
                 (uv[:, 1] < self.config['cam']['H']-edge)*(uv[:, 1] > edge)
+            # 深度掩码
             mask = mask & (z[:, :, 0] < 0)
             mask = mask.reshape(-1)
+            # 满足的条件的像素数目
             percent_inside = mask.sum()/uv.shape[0]
+            # 添加到关键帧中
             key_frame_list.append(
                 {'id': frame_id, 'percent_inside': percent_inside, 'sample_id':i})
         
-            
-
+        # 按照 percent_inside 排序
         key_frame_list = sorted(
         key_frame_list, key=lambda i: i['percent_inside'], reverse=True)
+        # 取其采样 ID
         selected_keyframe_list = [dic['sample_id']
                                 for dic in key_frame_list if dic['percent_inside'] > 0.00]
+        # 对所选取的进行随机排列
         selected_keyframe_list = list(np.random.permutation(
             np.array(selected_keyframe_list))[:k_frame])
-
+        # 确保最后一帧始终被选择
         last_id = len(self.frame_ids) - 1
-
         if last_id not in selected_keyframe_list:
             selected_keyframe_list.append(last_id)
 

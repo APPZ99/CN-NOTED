@@ -64,7 +64,7 @@ class JointEncoding(nn.Module):
         # 采用的是 v2 版本
         else:
             self.decoder = ColorSDFNet_v2(config, input_ch=self.input_ch, input_ch_pos=self.input_ch_pos)
-        # 将两个网络单独分离开
+        # 将两个网络单独分离开，并返回一个函数
         self.color_net = batchify(self.decoder.color_net, None)
         self.sdf_net = batchify(self.decoder.sdf_net, None)
 
@@ -78,16 +78,22 @@ class JointEncoding(nn.Module):
         Returns:
             weights: [N_rays, N_samples]
         '''
+        # 权重值，论文公式(5)
         weights = torch.sigmoid(sdf / args['training']['trunc']) * torch.sigmoid(-sdf / args['training']['trunc'])
 
+        # 检查相邻的SDF是否异号
         signs = sdf[:, 1:] * sdf[:, :-1]
+        # 标记哪些点的相邻SDF值异号
         mask = torch.where(signs < 0.0, torch.ones_like(signs), torch.zeros_like(signs))
         inds = torch.argmax(mask, axis=1)
         inds = inds[..., None]
+        # 取到对应的采样点
         z_min = torch.gather(z_vals, 1, inds) # The first surface
+        # 截断区域的掩码
         mask = torch.where(z_vals < z_min + args['data']['sc_factor'] * args['training']['trunc'], torch.ones_like(z_vals), torch.zeros_like(z_vals))
-
+        # 有效区域的权重
         weights = weights * mask
+        # 归一化权重
         return weights / (torch.sum(weights, axis=-1, keepdims=True) + 1e-8)
     
     def raw2outputs(self, raw, z_vals, white_bkgd=False):
@@ -103,15 +109,21 @@ class JointEncoding(nn.Module):
             acc_map: [N_rays]
             weights: [N_rays, N_samples]
         '''
+        # 颜色渲染
         rgb = torch.sigmoid(raw[...,:3])  # [N_rays, N_samples, 3]
         weights = self.sdf2weights(raw[..., 3], z_vals, args=self.config)
         rgb_map = torch.sum(weights[...,None] * rgb, -2)  # [N_rays, 3]
 
+        # 深度渲染
+        # 深度图
         depth_map = torch.sum(weights * z_vals, -1)
+        # 深度方差
         depth_var = torch.sum(weights * torch.square(z_vals - depth_map.unsqueeze(-1)), dim=-1)
+        # 视差图
         disp_map = 1./torch.max(1e-10 * torch.ones_like(depth_map), depth_map / torch.sum(weights, -1))
         acc_map = torch.sum(weights, -1)
 
+        # rgb_map + (1.-acc_map[...,None])的操作，将透明度值与rgb_map相加，以增加白色背景效果。
         if white_bkgd:
             rgb_map = rgb_map + (1.-acc_map[...,None])
 
@@ -126,16 +138,19 @@ class JointEncoding(nn.Module):
             sdf: [N_rays, N_samples]
             geo_feat: [N_rays, N_samples, channel]
         '''
+        # 查询点的坐标
         inputs_flat = torch.reshape(query_points, [-1, query_points.shape[-1]])
-  
+        # 进行编码
         embedded = self.embed_fn(inputs_flat)
         if embed:
             return torch.reshape(embedded, list(query_points.shape[:-1]) + [embedded.shape[-1]])
-
+        # 位置编码
         embedded_pos = self.embedpos_fn(inputs_flat)
+        # SDF 网络输出
         out = self.sdf_net(torch.cat([embedded, embedded_pos], dim=-1))
+        # SDF 值，几何特征
         sdf, geo_feat = out[..., :1], out[..., 1:]
-
+        # 与查询点相同形状
         sdf = torch.reshape(sdf, list(query_points.shape[:-1]))
         if not return_geo:
             return sdf
@@ -242,7 +257,7 @@ class JointEncoding(nn.Module):
         # Importance sampling
         if self.config['training']['n_importance'] > 0:
 
-            rgb_map_0, disp_map_0, acc_map_0, depth_map_0, depth_var_0 = rgb_map, disp_map, acc_map, depth_map, depth_var
+            rgb_map_0, disp_map_0, acc_map_0, depth_margb_map + (1.-acc_map[...,None])的操作，将透明度值与rgb_map相加，以增加白色背景效果。p_0, depth_var_0 = rgb_map, disp_map, acc_map, depth_map, depth_var
 
             z_vals_mid = .5 * (z_vals[...,1:] + z_vals[...,:-1])
             z_samples = sample_pdf(z_vals_mid, weights[...,1:-1], self.config['training']['n_importance'], det=(self.config['training']['perturb']==0.))

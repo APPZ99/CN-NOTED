@@ -101,6 +101,7 @@ class CoSLAM():
         '''
         Load the ground truth pose
         '''
+        # 加载位姿真值
         self.pose_gt = {}
         for i, pose in enumerate(self.dataset.poses):
             self.pose_gt[i] = pose
